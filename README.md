@@ -1,27 +1,27 @@
-# 🐍 Snake NSI – Projet Python / Pygame
+# Snake NSI – Projet Python / Pygame
 
 ## Description
-Ce projet est une **réalisation du jeu Snake** en Python avec **Pygame**, dans le cadre du programme de **Terminale NSI**.  
-Il s’inspire du célèbre **Snake de Google**, avec des améliorations graphiques et des fonctionnalités supplémentaires.
+Ce projet est une implémentation du jeu Snake en Python à l'aide de la bibliothèque Pygame, réalisée dans le cadre du programme de Terminale NSI.  
+Le jeu s’inspire du Snake de Google et comprend plusieurs améliorations graphiques et fonctionnelles.
 
-Le serpent est animé de façon fluide, avec un **corps qui rétrécit progressivement** et des **pommes avec un dégradé de couleur**.
-
----
-
-## 🎮 Fonctionnalités
-
-- ✅ **Menu principal** avec affichage du **high score**  
-- ✅ **Pause** du jeu  
-- ✅ **Serpent fluide** avec tête et corps arrondi progressif  
-- ✅ **Pommes avec dégradé** pour un rendu visuel amélioré  
-- ✅ **High score sauvegardé** dans un fichier `highscore.txt`  
-- ✅ Fond **style grille comme Google Snake**  
-- ✅ Yeux directionnels qui suivent le mouvement du serpent  
-- 🔹 Possibilité future : sons, vitesse progressive, mode 2 joueurs  
+Le serpent est animé de manière fluide, avec un corps rétrécissant progressivement et des pommes représentées avec un dégradé de couleur.
 
 ---
 
-## ⚡ Installation
+## Fonctionnalités
+
+- Menu principal avec affichage du score le plus élevé (high score)
+- Possibilité de mettre le jeu en pause
+- Serpent fluide avec tête et corps arrondi progressif
+- Pommes avec dégradé de couleur
+- Stockage du high score dans un fichier texte pour persistance
+- Grille de fond rappelant le style du Snake de Google
+- Yeux directionnels suivant le mouvement du serpent
+- Fonctionnalités futures possibles : ajout de sons, augmentation progressive de la vitesse, mode multijoueur
+
+---
+
+## Installation
 
 1. **Cloner le dépôt :**
 
