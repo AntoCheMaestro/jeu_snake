@@ -1,351 +1,394 @@
 # engine.py
-# Moteur de jeu (logique) SANS pygame.
-# Objectif : code clair, testable, et facile à complexifier.
-
 import random
+import math
 
+class Etat:
+    """États possibles du jeu."""
+    MENU              = "menu"
+    COMPTE_A_REBOURS  = "compte_a_rebours"
+    JEU               = "jeu"
+    PAUSE             = "pause"
+    PERDU             = "perdu"
+
+class TypeEvenement:
+    """Types d'événements publiés par le moteur."""
+    POMME_MANGEE     = "pomme_mangee"
+    BONUS_MANGE      = "bonus_mange"
+    BONUS_EXPIRE     = "bonus_expire"
+    RECORD_BATTU     = "record_battu"
+    PARTIE_TERMINEE  = "partie_terminee"
+    NIVEAU_MONTE     = "niveau_monte"
+    COMPTE_DEBUT     = "compte_debut"
+    COMBO_ACTIF      = "combo_actif"
+
+class BusEvenements:
+    """Bus d'événements (Observer pattern) pour découpler le moteur de l'affichage."""
+    def __init__(self):
+        self._abonnes = {}
+
+    def abonner(self, type_ev, action):
+        if type_ev not in self._abonnes:
+            self._abonnes[type_ev] = []
+        self._abonnes[type_ev].append(action)
+
+    def publier(self, type_ev, donnees=None):
+        if donnees is None:
+            donnees = {}
+        for action in self._abonnes.get(type_ev, []):
+            action(donnees)
 
 class MoteurSnake:
-    def __init__(self, config, highscore=0, graine=None):
-        self.cfg = config
-        self.rng = random.Random(graine)
+    """Moteur de jeu gérant les règles, l'état, et les déplacements du Serpent."""
 
-        # Etats possibles : "menu", "jeu", "pause", "perdu"
-        self.etat = "menu"
+    def __init__(self, config, meilleur_score=0, graine=None):
+        self.config = config
+        self.aleatoire = random.Random(graine)
+        self.bus = BusEvenements()
+        self.etat = Etat.MENU
 
-        # Options (réglables dans le menu)
-        self.sans_murs = self.cfg.sans_murs_defaut
-        self.portails_actifs = self.cfg.portails_defaut
-        self.obstacles_actifs = self.cfg.obstacles_defaut
-        self.vitesse = "normal"  # "lent" / "normal" / "rapide"
+        # Options du menu
+        self.sans_murs       = self.config.sans_murs_defaut
+        self.portails_actifs = self.config.portails_defaut
+        self.obstacles_actifs = self.config.obstacles_defaut
+        self.vitesse         = "normal"
 
-        # Score = nombre de pommes mangées (comme Google Snake)
-        self.score = 0
-        self.highscore = highscore
-        self.highscore_a_sauver = False  # True quand on dépasse le highscore
+        self.score          = 0
+        self.meilleur_score = meilleur_score
 
-        # Timing : accumulateur pour faire des ticks réguliers
-        # + durée d'un tick (utile pour l'animation fluide côté affichage)
+        # Timing
         self.accumulateur = 0.0
-        self.duree_tick = 0.1
+        self.duree_etape  = 0.1
+        self._bonus_tps   = 0.0
 
         # Données de jeu
-        self.serpent = []
-        self.serpent_precedent = []  # IMPORTANT : sert à l'interpolation (animation fluide)
-        self.longueur_voulue = 0
+        self.serpent           = []
+        self.serpent_precedent = []
+        self.longueur_voulue   = 0
+        self.direction         = (1, 0)
+        self._file_directions  = []
 
-        self.direction = (1, 0)         # (dx, dy) : commence vers la droite
-        self.direction_voulue = None    # direction demandée au clavier, appliquée au tick suivant
+        self.pomme       = None
+        self.pomme_bonus = None
+        self._timer_bonus = 0.0
 
-        self.pomme = None               # (x, y)
-        self.obstacles = set()          # ensemble de cases
-        self.portail_a = None           # (x, y) ou None
-        self.portail_b = None           # (x, y) ou None
+        self.obstacles = set()
+        self.portail_a = None
+        self.portail_b = None
 
-        # Prépare une partie "prête" (mais on reste au menu)
-        self.reset_partie()
-        self.etat = "menu"
+        # Niveaux
+        self.niveau               = 1
+        self._timer_message_lvl   = 0.0
 
-    # =============================
-    # Fonctions "menu" (options)
-    # =============================
+        # Multiplicateur
+        self._timer_depuis_pomme = 0.0
+        self.combo_actif         = False
+
+        # Compte à rebours
+        self._timer_compte      = 0.0
+        self.compte_affiche     = 0
+
+        self.reinitialiser_partie()
+        self.etat = Etat.MENU
 
     def basculer_sans_murs(self):
-        if self.etat == "menu":
+        if self.etat == Etat.MENU:
             self.sans_murs = not self.sans_murs
 
     def basculer_portails(self):
-        if self.etat == "menu":
+        if self.etat == Etat.MENU:
             self.portails_actifs = not self.portails_actifs
 
     def basculer_obstacles(self):
-        if self.etat == "menu":
+        if self.etat == Etat.MENU:
             self.obstacles_actifs = not self.obstacles_actifs
 
     def choisir_vitesse(self, vitesse):
-        # vitesse: "lent" / "normal" / "rapide"
-        if self.etat == "menu":
-            if vitesse in ("lent", "normal", "rapide"):
-                self.vitesse = vitesse
-
-    # =============================
-    # Cycle de vie (start/pause)
-    # =============================
+        if self.etat == Etat.MENU and vitesse in ("lent", "normal", "rapide"):
+            self.vitesse = vitesse
 
     def demarrer(self):
-        # Démarre une partie depuis menu ou après un game over
-        if self.etat in ("menu", "perdu"):
-            self.reset_partie()
-        self.etat = "jeu"
+        if self.etat in (Etat.MENU, Etat.PERDU):
+            self.reinitialiser_partie()
+        self.etat           = Etat.COMPTE_A_REBOURS
+        self._timer_compte  = self.config.duree_compte_a_rebours
+        self.compte_affiche = 3
+        self.bus.publier(TypeEvenement.COMPTE_DEBUT)
 
     def retour_menu(self):
-        self.etat = "menu"
+        self.etat = Etat.MENU
 
     def basculer_pause(self):
-        if self.etat == "jeu":
-            self.etat = "pause"
-        elif self.etat == "pause":
-            self.etat = "jeu"
-
-    # =============================
-    # Entrées (direction)
-    # =============================
+        if self.etat == Etat.JEU:
+            self.etat = Etat.PAUSE
+        elif self.etat == Etat.PAUSE:
+            self.etat = Etat.JEU
 
     def demander_direction(self, dx, dy):
-        # On empêche le demi-tour direct (classique Snake)
-        if self.etat not in ("jeu", "pause"):
+        """Ajoute une direction à la file pour le prochain mouvement."""
+        if self.etat not in (Etat.JEU, Etat.PAUSE):
             return
 
-        dx_actuel, dy_actuel = self.direction
-        if dx == -dx_actuel and dy == -dy_actuel:
+        if len(self._file_directions) > 0:
+            dx_ref, dy_ref = self._file_directions[-1]
+        else:
+            dx_ref, dy_ref = self.direction
+
+        if dx == -dx_ref and dy == -dy_ref:
             return
 
-        self.direction_voulue = (dx, dy)
-
-    # =============================
-    # Timing / update
-    # =============================
+        if len(self._file_directions) < 2:
+            self._file_directions.append((dx, dy))
 
     def tps_actuel(self):
-        # ticks par seconde selon la vitesse choisie
+        """Vitesse actuelle en Ticks Par Seconde."""
         if self.vitesse == "lent":
-            return self.cfg.tps_lent
-        if self.vitesse == "rapide":
-            return self.cfg.tps_rapide
-        return self.cfg.tps_normal
+            base = self.config.tps_lent
+        elif self.vitesse == "rapide":
+            base = self.config.tps_rapide
+        else:
+            base = self.config.tps_normal
 
-    def progression_tick(self):
-        """
-        Renvoie un nombre entre 0 et 1.
-        - 0  : on est juste après un tick (début du mouvement vers la prochaine case)
-        - 1  : on est juste avant le tick suivant
-        Sert à dessiner un déplacement fluide dans pygame_app.py
-        """
-        if self.duree_tick <= 0:
-            return 0.0
-        t = self.accumulateur / self.duree_tick
-        if t < 0.0:
-            return 0.0
-        if t > 1.0:
-            return 1.0
-        return t
+        tps = base + self._bonus_tps
+        return min(tps, self.config.tps_max)
 
-    def update(self, dt):
-        # dt en secondes
-        if self.etat != "jeu":
+    def progression_etape(self):
+        """Retourne l'avancée (0.0 à 1.0) entre deux mouvements pour le rendu fluide."""
+        if self.duree_etape <= 0:
+            return 0.0
+        t = self.accumulateur / self.duree_etape
+        return max(0.0, min(t, 1.0))
+
+    def mettre_a_jour(self, delta_temps):
+        """Appelé à chaque cycle pour avancer le jeu."""
+        if self.etat == Etat.COMPTE_A_REBOURS:
+            self._timer_compte -= delta_temps
+            restant = max(0.0, self._timer_compte)
+            self.compte_affiche = int(restant) + 1
+            if self._timer_compte <= 0:
+                self.etat           = Etat.JEU
+                self.compte_affiche = 0
             return
 
-        # si dt est énorme (lag), on limite pour éviter les sauts
-        if dt > 0.25:
-            dt = 0.25
+        if self.etat != Etat.JEU:
+            return
 
-        # On met à jour la durée d'un tick selon la vitesse
-        self.duree_tick = 1.0 / float(self.tps_actuel())
+        # Cap anti-lag (évite les sursauts si un calcul est long)
+        delta_temps = min(delta_temps, 0.25)
 
-        self.accumulateur += dt
+        if self.pomme_bonus is not None:
+            self._timer_bonus -= delta_temps
+            if self._timer_bonus <= 0:
+                self.pomme_bonus  = None
+                self._timer_bonus = 0.0
+                self.bus.publier(TypeEvenement.BONUS_EXPIRE)
 
-        while self.accumulateur >= self.duree_tick and self.etat == "jeu":
-            self.accumulateur -= self.duree_tick
-            self.tick()
+        if self._timer_depuis_pomme > 0:
+            self._timer_depuis_pomme -= delta_temps
+            if self._timer_depuis_pomme <= 0:
+                self._timer_depuis_pomme = 0.0
+                self.combo_actif         = False
 
-    # =============================
-    # Partie (reset / tick)
-    # =============================
+        if self._timer_message_lvl > 0:
+            self._timer_message_lvl -= delta_temps
+            if self._timer_message_lvl < 0:
+                self._timer_message_lvl = 0.0
 
-    def reset_partie(self):
-        # Snake au centre, horizontal, vers la droite
-        cx = self.cfg.largeur_grille // 2
-        cy = self.cfg.hauteur_grille // 2
+        self.duree_etape = 1.0 / self.tps_actuel()
+        self.accumulateur += delta_temps
 
-        self.serpent = []
-        for i in range(self.cfg.longueur_initiale):
-            self.serpent.append((cx - i, cy))
+        while self.accumulateur >= self.duree_etape and self.etat == Etat.JEU:
+            self.accumulateur -= self.duree_etape
+            self.avancer()
 
-        # Au départ, précédent = actuel (sinon l'animation ferait un "glitch")
+    def reinitialiser_partie(self):
+        cx = self.config.largeur_grille // 2
+        cy = self.config.hauteur_grille // 2
+        self.serpent = [(cx - i, cy) for i in range(self.config.longueur_initiale)]
         self.serpent_precedent = list(self.serpent)
 
-        self.longueur_voulue = self.cfg.longueur_initiale
-        self.direction = (1, 0)
-        self.direction_voulue = None
+        self.longueur_voulue = self.config.longueur_initiale
+        self.direction       = (1, 0)
+        self._file_directions = []
 
-        self.score = 0
-        self.highscore_a_sauver = False
-        self.accumulateur = 0.0
-        self.duree_tick = 1.0 / float(self.tps_actuel())
+        self.score            = 0
+        self._bonus_tps       = 0.0
+        self.accumulateur     = 0.0
+        self.duree_etape      = 1.0 / self.tps_actuel()
 
-        # Obstacles
+        self.niveau               = 1
+        self._timer_message_lvl   = 0.0
+
+        self._timer_depuis_pomme = 0.0
+        self.combo_actif         = False
+
+        self.pomme_bonus  = None
+        self._timer_bonus = 0.0
+
         self.obstacles = set()
         if self.obstacles_actifs:
-            self.generer_obstacles(self.cfg.nombre_obstacles)
+            self.generer_obstacles(self.config.nombre_obstacles)
 
-        # Portails
         self.portail_a = None
         self.portail_b = None
         if self.portails_actifs:
             self.generer_portails()
 
-        # Pomme
         self.pomme = self.choisir_case_libre()
 
-    def tick(self):
-        # IMPORTANT : on mémorise l'état du serpent AVANT de bouger,
-        # pour pouvoir interpoler (animation fluide) côté affichage.
+    def avancer(self):
+        """Logique de mouvement et collision lors d'un avancement du Serpent."""
         self.serpent_precedent = list(self.serpent)
 
-        # 1) Appliquer direction demandée (si existante)
-        if self.direction_voulue is not None:
-            self.direction = self.direction_voulue
-            self.direction_voulue = None
+        if len(self._file_directions) > 0:
+            self.direction = self._file_directions.pop(0)
 
-        # 2) Calculer prochaine case
         tete_x, tete_y = self.serpent[0]
-        dx, dy = self.direction
-        prochaine = (tete_x + dx, tete_y + dy)
+        dx, dy         = self.direction
+        prochaine      = (tete_x + dx, tete_y + dy)
 
-        # 3) Gestion des murs / wrap
         prochaine = self.normaliser_case(prochaine)
         if prochaine is None:
-            self.etat = "perdu"
+            self._fin_partie()
             return
 
-        # 4) Portails (si activés)
         prochaine = self.teleporter_si_portail(prochaine)
 
-        # 5) Collision obstacles
         if self.obstacles_actifs and prochaine in self.obstacles:
-            self.etat = "perdu"
+            self._fin_partie()
             return
 
-        # 6) Déplacement : on ajoute la tête
         self.serpent.insert(0, prochaine)
 
-        # 7) Manger la pomme ?
-        mange = (prochaine == self.pomme)
-        if mange:
-            self.score += 1
-            self.longueur_voulue += self.cfg.croissance_par_pomme
-
-            if self.score > self.highscore:
-                self.highscore = self.score
-                self.highscore_a_sauver = True
-
-            # Nouvelle pomme
-            self.pomme = self.choisir_case_libre()
+        if prochaine == self.pomme:
+            self._manger_pomme_normale()
+        elif self.pomme_bonus is not None and prochaine == self.pomme_bonus:
+            self._manger_pomme_bonus()
         else:
-            # On enlève la queue pour garder la même longueur
             while len(self.serpent) > self.longueur_voulue:
                 self.serpent.pop()
 
-        # 8) Collision avec soi-même
         tete = self.serpent[0]
         corps = self.serpent[1:]
         if tete in corps:
-            self.etat = "perdu"
-            return
+            self._fin_partie()
 
-    # =============================
-    # Outils grille
-    # =============================
+    def _manger_pomme_normale(self):
+        if self._timer_depuis_pomme > 0:
+            points_gagnes    = self.config.score_multi
+            self.combo_actif = True
+            self.bus.publier(TypeEvenement.COMBO_ACTIF, {"score": self.score})
+        else:
+            points_gagnes    = 1
+            self.combo_actif = False
+
+        self.score           += points_gagnes
+        self.longueur_voulue += self.config.croissance_par_pomme
+        self._timer_depuis_pomme = self.config.delai_multi
+        self._bonus_tps += self.config.tps_acceleration
+
+        self._verifier_meilleur_score()
+        self.bus.publier(TypeEvenement.POMME_MANGEE, {"score": self.score, "combo": self.combo_actif})
+        self._verifier_niveau()
+
+        self.pomme = self.choisir_case_libre()
+
+        if self.pomme_bonus is None and self.config.duree_pomme_bonus > 0:
+            if self.aleatoire.random() < self.config.proba_pomme_bonus:
+                bonus = self.choisir_case_libre()
+                if bonus != (0, 0):
+                    self.pomme_bonus  = bonus
+                    self._timer_bonus = self.config.duree_pomme_bonus
+
+    def _manger_pomme_bonus(self):
+        self.score           += self.config.score_pomme_bonus
+        self.longueur_voulue += self.config.croissance_par_pomme
+        self._bonus_tps      += self.config.tps_acceleration * 0.5
+        self._timer_depuis_pomme = self.config.delai_multi
+
+        self._verifier_meilleur_score()
+        self.pomme_bonus  = None
+        self._timer_bonus = 0.0
+        self.bus.publier(TypeEvenement.BONUS_MANGE, {"score": self.score})
+
+    def _verifier_meilleur_score(self):
+        if self.score > self.meilleur_score:
+            self.meilleur_score = self.score
+            self.bus.publier(TypeEvenement.RECORD_BATTU, {"score": self.meilleur_score})
+
+    def _verifier_niveau(self):
+        nouveau_niveau = (self.score // self.config.pommes_par_niveau) + 1
+        if nouveau_niveau > self.niveau:
+            self.niveau             = nouveau_niveau
+            self._timer_message_lvl = self.config.duree_message_lvl
+            if self.obstacles_actifs:
+                self.generer_obstacles(self.config.obstacles_par_lvl)
+            self.bus.publier(TypeEvenement.NIVEAU_MONTE, {"niveau": self.niveau})
+
+    def _fin_partie(self):
+        self.etat = Etat.PERDU
+        self.bus.publier(TypeEvenement.PARTIE_TERMINEE, {"score": self.score})
 
     def case_dans_grille(self, case):
         x, y = case
-        if x < 0 or x >= self.cfg.largeur_grille:
-            return False
-        if y < 0 or y >= self.cfg.hauteur_grille:
-            return False
-        return True
+        return 0 <= x < self.config.largeur_grille and 0 <= y < self.config.hauteur_grille
 
     def normaliser_case(self, case):
-        # Retourne une case valide, ou None si on sort (si sans_murs=False)
         x, y = case
-
         if self.sans_murs:
-            # wrap : on réapparaît de l'autre côté
-            x = x % self.cfg.largeur_grille
-            y = y % self.cfg.hauteur_grille
-            return (x, y)
-
-        # murs solides
+            return x % self.config.largeur_grille, y % self.config.hauteur_grille
         if not self.case_dans_grille((x, y)):
             return None
         return (x, y)
 
     def case_est_libre(self, case):
-        # Une case est libre si elle n'est ni sur le snake, ni sur un obstacle, ni sur un portail
         if case in self.serpent:
             return False
         if self.obstacles_actifs and case in self.obstacles:
             return False
-        if self.portails_actifs:
-            if self.portail_a is not None and case == self.portail_a:
-                return False
-            if self.portail_b is not None and case == self.portail_b:
-                return False
+        if self.portails_actifs and case in (self.portail_a, self.portail_b):
+            return False
         return True
 
     def choisir_case_libre(self):
-        # Méthode simple : on liste les cases libres puis on en choisit une au hasard.
-        cases_libres = []
-        for y in range(self.cfg.hauteur_grille):
-            for x in range(self.cfg.largeur_grille):
-                c = (x, y)
-                if self.case_est_libre(c):
-                    cases_libres.append(c)
-
-        if len(cases_libres) == 0:
-            # plus de place => fin de partie
-            self.etat = "perdu"
+        cases_libres = [
+            (x, y)
+            for y in range(self.config.hauteur_grille)
+            for x in range(self.config.largeur_grille)
+            if self.case_est_libre((x, y))
+        ]
+        if not cases_libres:
+            self._fin_partie()
             return (0, 0)
-
-        return self.rng.choice(cases_libres)
-
-    # =============================
-    # Obstacles / Portails
-    # =============================
+        return self.aleatoire.choice(cases_libres)
 
     def generer_obstacles(self, nombre):
-        # On place des obstacles loin du centre pour éviter de bloquer le départ.
-        cx = self.cfg.largeur_grille // 2
-        cy = self.cfg.hauteur_grille // 2
-
-        candidats = []
-        for y in range(self.cfg.hauteur_grille):
-            for x in range(self.cfg.largeur_grille):
-                # zone "safe" autour du spawn
-                if abs(x - cx) <= 4 and abs(y - cy) <= 4:
-                    continue
-                candidats.append((x, y))
-
-        self.rng.shuffle(candidats)
+        cx, cy = self.config.largeur_grille // 2, self.config.hauteur_grille // 2
+        candidats = [
+            (x, y) for y in range(self.config.hauteur_grille) for x in range(self.config.largeur_grille)
+            if not (abs(x - cx) <= 4 and abs(y - cy) <= 4)
+        ]
+        self.aleatoire.shuffle(candidats)
 
         places = 0
-        i = 0
-        while places < nombre and i < len(candidats):
-            c = candidats[i]
-            i += 1
+        for c in candidats:
+            if places >= nombre:
+                break
             if self.case_est_libre(c):
                 self.obstacles.add(c)
                 places += 1
 
     def generer_portails(self):
-        # Deux cases libres distinctes (on fait simple et robuste)
-        a = self.choisir_case_libre()
-        self.portail_a = a  # on fixe a pour éviter de retomber dessus
-
-        b = self.choisir_case_libre()
+        self.portail_a = self.choisir_case_libre()
         tentatives = 0
-        while b == a and tentatives < 80:
+        b = self.choisir_case_libre()
+        while b == self.portail_a and tentatives < 80:
             b = self.choisir_case_libre()
             tentatives += 1
-
         self.portail_b = b
 
     def teleporter_si_portail(self, case):
-        if not self.portails_actifs:
+        if not self.portails_actifs or self.portail_a is None:
             return case
-        if self.portail_a is None or self.portail_b is None:
-            return case
-
         if case == self.portail_a:
             return self.portail_b
         if case == self.portail_b:
