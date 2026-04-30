@@ -4,7 +4,7 @@
 ---
  
 ## Présentation
-
+ 
 Ce dépôt contient un **jeu Snake** développé en **Python**, avec une interface graphique réalisée en **Pygame**, inspiré du **Snake Google**.
 
 Le projet ne se limite pas à “faire un Snake” :  
